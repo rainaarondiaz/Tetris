@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tetris Game Over Video</title>
+  <style>
+    body {
+      background: #061425;
+      color: white;
+      font-family: Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 20px;
+      padding: 20px;
+    }
+    canvas {
+      background: #000814;
+      display: block;
+    }
+    .panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 140px;
+    }
+    .preview {
+      background: #000814;
+      width: 120px;
+      height: 120px;
+    }
+    button {
+      padding: 6px 10px;
+      background: #112;
+      color: white;
+      border: 1px solid #445;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #223;
+    }
+    .signature {
+      text-align: center;
+      margin-top: 20px;
+    }
+    .signature img {
+      border-radius: 10px;
+      width: 100px;
+    }
+    .signature p {
+      margin-top: 5px;
+      font-size: 14px;
+      color: #ccc;
+    }
+    /* Game Over video styling */
+    #gameover-video {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 260px;
+      width: 240px;
+      border: 3px solid red;
+      border-radius: 8px;
+      display: none;
+      z-index: 10;
+    }
+    #game-wrapper {
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <canvas id="game" width="240" height="480"></canvas>
+    <!-- Game Over video -->
+    <video id="gameover-video">
+      <source src="gameover.mp4" type="video/mp4">
+    </video>
+  </div>
+
+  <div class="panel">
+    <h2>Tetris</h2>
+    <div>Score: <span id="score">0</span></div>
+    <div>Level: <span id="level">1</span></div>
+    <div>Lines: <span id="lines">0</span></div>
+    <div>Next</div>
+    <canvas id="next" class="preview" width="120" height="120"></canvas>
+    <div>Hold</div>
+    <canvas id="hold" class="preview" width="120" height="120"></canvas>
+    <small>
+      ← → Move · ↑ Rotate · ↓ Soft drop<br>
+      Space Hard drop · C Hold<br>
+      P Pause · R Restart
+    </small>
+    <div style="display:flex; gap:10px;">
+      <button id="btn-pause">Pause</button>
+      <button id="btn-restart">Restart</button>
+    </div>
+
+    <!-- Signature -->
+    <div class="signature">
+      <img src="apple.png" alt="Made by ulan">
+      <p>Made by ulan</p>
+    </div>
+  </div>
+
+<script>
+const COLS = 10, ROWS = 20, CELL = 24;
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const nctx = document.getElementById("next").getContext("2d");
+const hctx = document.getElementById("hold").getContext("2d");
+const gameoverVideo = document.getElementById("gameover-video");
+
+let board, current, next, hold, canHold;
+let bag = [], running = true, paused = false;
+let score = 0, lines = 0, level = 1;
+let dropInterval = 800, lastDrop = 0;
+let clearEffects = [];
+let particles = [];
+
+// Game Over animation
+let gameOverAnim = 0;
+
+// === Board setup ===
+function createBoard() {
+  return Array.from({length: ROWS}, () => Array(COLS).fill(0));
+}
+
+// === Tetrominos ===
+const TETROMINOS = {
+  I: [[1,1,1,1]],
+  O: [[1,1],[1,1]],
+  T: [[0,1,0],[1,1,1]],
+  S: [[0,1,1],[1,1,0]],
+  Z: [[1,1,0],[0,1,1]],
+  J: [[1,0,0],[1,1,1]],
+  L: [[0,0,1],[1,1,1]],
+};
+const TYPES = Object.keys(TETROMINOS);
+
+function rotations(shape){
+  let res=[shape];
+  for(let i=0;i<3;i++){
+    shape=shape[0].map((_,c)=>shape.map(r=>r[c]).reverse());
+    res.push(shape);
+  }
+  return res;
+}
+function bagGen(){
+  let b=[...TYPES];
+  for(let i=b.length-1;i>0;i--){
+    let j=Math.floor(Math.random()*(i+1));
+    [b[i],b[j]]=[b[j],b[i]];
+  }
+  return b;
+}
+function nextPiece(){
+  if(bag.length===0) bag=bagGen();
+  let type=bag.pop();
+  return {type,shapes:rotations(TETROMINOS[type]),rotation:0,x:3,y:0};
+}
+
+// === Collisions ===
+function collides(shape,x,y){
+  for(let r=0;r<shape.length;r++){
+    for(let c=0;c<shape[r].length;c++){
+      if(shape[r][c]){
+        let nx=x+c, ny=y+r;
+        if(nx<0||nx>=COLS||ny>=ROWS||board[ny][nx]) return true;
+      }
+    }
+  }
+  return false;
+}
+function merge(piece){
+  let shape=piece.shapes[piece.rotation];
+  for(let r=0;r<shape.length;r++){
+    for(let c=0;c<shape[r].length;c++){
+      if(shape[r][c]){
+        board[piece.y+r][piece.x+c]=piece.type;
+      }
+    }
+  }
+}
+
+// === Line clear ===
+function clearLines(){
+  let newBoard=[], cleared=[];
+  for(let r=0;r<ROWS;r++){
+    if(board[r].every(v=>v)){
+      cleared.push(r);
+      spawnParticles(r);
+    }else{
+      newBoard.push(board[r]);
+    }
+  }
+  while(newBoard.length<ROWS) newBoard.unshift(Array(COLS).fill(0));
+  board=newBoard;
+  if(cleared.length){
+    clearEffects=cleared;
+    score+=100*cleared.length*level;
+    lines+=cleared.length;
+    level=1+Math.floor(lines/10);
+    dropInterval=800-(level-1)*60;
+    setTimeout(()=>clearEffects=[],200);
+  }
+}
+
+// === Particles ===
+function spawnParticles(row){
+  for (let c = 0; c < COLS; c++) {
+    for (let i = 0; i < 3; i++) {
+      particles.push({
+        x: c * CELL + CELL/2,
+        y: row * CELL + CELL/2,
+        vx: (Math.random()-0.5)*3,
+        vy: (Math.random()-1)*3,
+        alpha: 1
+      });
+    }
+  }
+}
+
+// === Piece control ===
+function spawn(){
+  current=next;
+  next=nextPiece();
+  canHold=true;
+  if(collides(current.shapes[current.rotation],current.x,current.y)){
+    running=false;
+    triggerGameOver();
+  }
+}
+function move(dx){ if(!collides(current.shapes[current.rotation],current.x+dx,current.y)) current.x+=dx; }
+function softDrop(){ if(!collides(current.shapes[current.rotation],current.x,current.y+1)) current.y++; else lock(); }
+function hardDrop(){ while(!collides(current.shapes[current.rotation],current.x,current.y+1)) current.y++; lock(); }
+function rotate(){
+  let rot=(current.rotation+1)%current.shapes.length;
+  if(!collides(current.shapes[rot],current.x,current.y)) current.rotation=rot;
+}
+function lock(){ merge(current); clearLines(); spawn(); }
+function holdPiece(){
+  if(!canHold) return;
+  if(!hold){
+    hold={...current};
+    spawn();
+  }else{
+    [hold,current]=[current,hold];
+    current.x=3; current.y=0; current.rotation=0;
+  }
+  canHold=false;
+}
+
+// === Drawing ===
+function drawBlock(x,y,type,size=CELL,context=ctx){
+  const colors={I:"#00f0f0",O:"#f0f000",T:"#a000f0",S:"#00f000",Z:"#f00000",J:"#0000f0",L:"#f0a000"};
+  let color=colors[type]||"#fff";
+  let grad=context.createLinearGradient(x*size,y*size,(x+1)*size,(y+1)*size);
+  grad.addColorStop(0,"#fff");
+  grad.addColorStop(1,color);
+  context.fillStyle=grad;
+  context.fillRect(x*size,y*size,size,size);
+  context.strokeStyle="rgba(0,0,0,0.5)";
+  context.strokeRect(x*size,y*size,size,size);
+}
+
+function draw(){
+  ctx.fillStyle="#061425";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Grid
+  ctx.strokeStyle="rgba(255,255,255,0.08)";
+  for (let x=0;x<=COLS;x++){ctx.beginPath();ctx.moveTo(x*CELL,0);ctx.lineTo(x*CELL,ROWS*CELL);ctx.stroke();}
+  for (let y=0;y<=ROWS;y++){ctx.beginPath();ctx.moveTo(0,y*CELL);ctx.lineTo(COLS*CELL,y*CELL);ctx.stroke();}
+
+  // Board
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(board[r][c]) drawBlock(c,r,board[r][c]);
+
+  // Ghost outline
+  if(current){
+    let ghostY=current.y;
+    while(!collides(current.shapes[current.rotation],current.x,ghostY+1)) ghostY++;
+    let m=current.shapes[current.rotation];
+    for(let r=0;r<m.length;r++){
+      for(let c=0;c<m[r].length;c++){
+        if(m[r][c]){
+          ctx.strokeStyle="rgba(255,255,255,0.4)";
+          ctx.lineWidth=2;
+          ctx.strokeRect((current.x+c)*CELL,(ghostY+r)*CELL,CELL,CELL);
+        }
+      }
+    }
+  }
+
+  // Current piece
+  if(current){
+    let m=current.shapes[current.rotation];
+    for(let r=0;r<m.length;r++) for(let c=0;c<m[r].length;c++) if(m[r][c]) drawBlock(current.x+c,current.y+r,current.type);
+  }
+
+  // Flash effect
+  for (let r of clearEffects) {
+    ctx.fillStyle="rgba(255,255,255,.6)";
+    ctx.fillRect(0,r*CELL,COLS*CELL,CELL);
+  }
+
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    let p=particles[i];
+    ctx.fillStyle=`rgba(255,255,255,${p.alpha})`;
+    ctx.fillRect(p.x,p.y,3,3);
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.1;
+    p.alpha-=0.02;
+    if(p.alpha<=0) particles.splice(i,1);
+  }
+
+  // Previews
+  drawPreview(next,nctx);
+  drawPreview(hold,hctx);
+
+  // Game Over overlay
+  if(!running){
+    drawGameOver();
+  }
+}
+
+function drawPreview(piece,context){
+  context.fillStyle="#000814";
+  context.fillRect(0,0,context.canvas.width,context.canvas.height);
+  if(!piece) return;
+  let m=piece.shapes[0];
+  for(let r=0;r<m.length;r++) for(let c=0;c<m[r].length;c++) if(m[r][c]) drawBlock(c+1,r+1,piece.type,CELL,context);
+}
+
+// === Loop ===
+function loop(t=0){
+  if(!running){ draw(); return; }
+  requestAnimationFrame(loop);
+  if(paused) return;
+  if(t-lastDrop>dropInterval){ softDrop(); lastDrop=t; }
+  draw(); updateStats();
+}
+function updateStats(){
+  document.getElementById("score").textContent=score;
+  document.getElementById("lines").textContent=lines;
+  document.getElementById("level").textContent=level;
+}
+
+// === Controls ===
+const actions={
+  ArrowLeft:()=>move(-1),
+  ArrowRight:()=>move(1),
+  ArrowDown:()=>softDrop(),
+  ArrowUp:()=>rotate(),
+  Space:()=>hardDrop(),
+  KeyC:()=>holdPiece(),
+  KeyP:()=>paused=!paused,
+  KeyR:()=>restart()
+};
+const keyStates={};
+document.addEventListener("keydown",e=>{
+  if(!(e.code in actions)) return;
+  if(keyStates[e.code]) return;
+  actions[e.code]();
+  keyStates[e.code]=setInterval(actions[e.code],150);
+});
+document.addEventListener("keyup",e=>{
+  if(keyStates[e.code]){ clearInterval(keyStates[e.code]); delete keyStates[e.code]; }
+});
+
+// === Restart ===
+function restart(){
+  board=createBoard();
+  score=0;lines=0;level=1;
+  dropInterval=800;
+  running=true;paused=false;
+  bag=bagGen();next=nextPiece();hold=null;
+  spawn();
+  // hide Game Over video
+  gameoverVideo.pause();
+  gameoverVideo.currentTime=0;
+  gameoverVideo.style.display="none";
+  loop();
+}
+
+// === Game Over handling ===
+function triggerGameOver(){
+  gameOverAnim = 0;
+  showGameOverVideo();
+}
+function drawGameOver(){
+  gameOverAnim += 0.05;
+  let size = Math.min(400, gameOverAnim * 400); // Bigger max size
+  ctx.fillStyle="rgba(0,0,0,0.6)";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="red";
+  ctx.font=`bold ${size}px Arial`;
+  ctx.textAlign="center";
+  ctx.textBaseline="middle";
+  ctx.fillText("GAME OVER", canvas.width/2, canvas.height/2 - 100);
+}
+function showGameOverVideo(){
+  gameoverVideo.style.display="block";
+  gameoverVideo.play();
+}
+
+document.getElementById("btn-pause").onclick=()=>paused=!paused;
+document.getElementById("btn-restart").onclick=()=>restart();
+
+restart();
+</script>
+</body>
+</html>
